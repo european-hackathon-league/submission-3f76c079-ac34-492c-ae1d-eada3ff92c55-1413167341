@@ -1,0 +1,12 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "01M4KDWNH5AHQRDGE9GX2ZXKVN",
+  "session_id": "v82-evidence-access-20261010",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-10T17:31:07.983767Z",
+  "checkpoints_count": 2,
+  "files_touched": null,
+  "agent": "Codex (scoped transcript export)",
+  "model": "",
+  "compact_transcript_start": 0
+}
