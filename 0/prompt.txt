@@ -1,0 +1,1 @@
+Using her structure: update the index structure (in a safe way) and test the changes on all the tasks
