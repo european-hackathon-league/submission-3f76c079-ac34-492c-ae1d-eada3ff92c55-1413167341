@@ -1,0 +1,1 @@
+make arena runs of p2 and p18
