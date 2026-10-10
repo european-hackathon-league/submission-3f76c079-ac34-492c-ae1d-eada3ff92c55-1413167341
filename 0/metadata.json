@@ -1,0 +1,12 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "01M4KSJA4M9W4MRN1DQ1RJ6T7C",
+  "session_id": "tacto-chatgpt-diagnostics-v1",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-10T20:55:11.570714Z",
+  "checkpoints_count": 1,
+  "files_touched": null,
+  "agent": "Codex (scoped transcript export)",
+  "model": "",
+  "compact_transcript_start": 0
+}
