@@ -1,0 +1,12 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "01M4KNKQK69RXZQSRRZVY53E4T",
+  "session_id": "ehl-v11-ksu-newer-20261010",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-10T19:46:03.697776Z",
+  "checkpoints_count": 2,
+  "files_touched": null,
+  "agent": "Codex (scoped transcript export)",
+  "model": "",
+  "compact_transcript_start": 0
+}
