@@ -1,0 +1,12 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "01M4K13E22Y8XQ61YWKRWAA3YM",
+  "session_id": "01a1206b-eecd-7871-9f28-8fe2c4a40559-improvements-integrated",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-10T13:47:38.201255Z",
+  "checkpoints_count": 2,
+  "files_touched": null,
+  "agent": "Codex (scoped transcript export)",
+  "model": "",
+  "compact_transcript_start": 0
+}
