@@ -1,0 +1,12 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "01M4KZM0K4AV4612GRY24Z2SHQ",
+  "session_id": "gemini-arena-p05-p08-20261011",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-10T22:40:58.626549Z",
+  "checkpoints_count": 3,
+  "files_touched": null,
+  "agent": "Codex (scoped transcript export)",
+  "model": "",
+  "compact_transcript_start": 0
+}
