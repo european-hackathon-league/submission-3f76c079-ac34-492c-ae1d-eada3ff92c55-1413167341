@@ -1,0 +1,1 @@
+P02 finished at **0.157—the same score as before**. Astra produced valid reviews and suggested indexed alternatives, but Python still chose the unindexed path. So the model swap hasn’t improved this case. P18 is now running with a different opening package: a shorter commitment and no index clause.: fix this problem. Why the hell does the Python choose the wrong thing?
