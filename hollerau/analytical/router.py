@@ -454,9 +454,11 @@ class Router:
                 return self._chat_once(m_base, m_name, system, data, slot, role, schema, key=m_key)
             except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.TransportError) as exc:
                 last_exc = exc
+                # any provider failure (rate limit, overload, credits exhausted = 401/402/403, a bad
+                # deployment) moves on to the next provider in the chain; only the last one may fail the call
                 status = getattr(getattr(exc, "response", None), "status_code", None)
-                if status not in (None, 408, 429, 500, 502, 503, 504):
-                    raise
+                record = {"provider_failure": status}
+                self.calls.append({"model": model, "role": role, "status": "provider_failed", **record})
             except (ValueError, KeyError, IndexError, TypeError) as exc:
                 # a truncated or unparsable answer from one model: try the next one (DeepSeek-V4.1 review)
                 last_exc = exc
