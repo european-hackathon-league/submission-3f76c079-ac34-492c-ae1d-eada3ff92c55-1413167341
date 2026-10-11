@@ -604,6 +604,15 @@ def build_board(agent, case, threads, source_map, history_map, closing_only=Fals
                                           "supplier's own alternative: propose it to make it binding")
                         if pid and pid not in allowed:
                             allowed = allowed[:2] + [pid]
+            # Price is the concession, levers are kept: no shorter payment and no shorter contract than our last
+            # offer for leverage/routine/quality goals (every record kept 90 days / 36 months; Azure P18 gave
+            # 90 -> 30 days and 36 -> 24 months in its second counter and ended at 0.35).
+            if th.last_terms and case["buyer"].get("category_goal") not in ("stabilise", "secure_supply"):
+                def keeps(pid, last=th.last_terms):
+                    t = board["packages"][pid]["terms"]
+                    return all((t.get(f) or 0) >= (last.get(f) or 0) for f in ("payment_days", "contract_months")
+                               if f in case["negotiable"] and last.get(f) is not None)
+                allowed = [pid for pid in allowed if keeps(pid)] or allowed
             # The supplier itself wrote that its material is bought at fixed prices: an index clause would pay it
             # for costs it does not have - fixed prices only, also for its own alternatives (P08 probe: no-index
             # packages with this letter cited -> 5.06, record 0.870; an index alternative at 5.57 scored 0.44).
