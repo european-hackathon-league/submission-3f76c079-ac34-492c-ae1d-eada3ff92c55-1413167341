@@ -550,12 +550,27 @@ def build_board(agent, case, threads, source_map, history_map, closing_only=Fals
                     # at temperature 0 the model always took the mildest point of a wider window (P18 at 90 %:
                     # 0.42); the records opened deep and followed the schedule (P11 86 % -> 45.00, 0.79; P18 85 %).
                     # Relationship goals: P02's record was 361-362 = 97-98 % with the index/payment variants.
-                    lo, hi, points = (0.95, 0.98, (0.96, 0.98)) if relationship else (0.82, 0.88, (0.86,))
+                    # relationship goals: P02 probes with an at-once agreement peaked at 97.3 % (358 -> 0.67,
+                    # 361 -> 0.735, 363.5 -> 0.71, 366 -> 0.61)
+                    lo, hi, points = (0.96, 0.98, (0.97, 0.975)) if relationship else (0.82, 0.88, (0.86,))
                     targets = sorted({round(ask * f, 2) for f in points}
                                      | {round(p, 2) for p in refs if ask * lo <= p <= ask * hi})
                     opening = [add_package({**v, "unit_price": t}, "data anchor: opening window")
                                for t in targets for v in variants[:3] or [current or th.reference]]
                     allowed = list(dict.fromkeys(pid for pid in opening if pid)) or allowed
+                    # An index clause whose deadband covers the expected index move costs us only the index risk
+                    # while the supplier values it: open with it (P02: deadband 5 vs copper +5 % -> agreed at once,
+                    # record 0.735; without the clause the supplier stayed at ~370 = 0.37). Not when the expected
+                    # move exceeds every deadband (P08/P18: AS-14404 +6 % > 5 %, fixed prices won there).
+                    paths = case["buyer"].get("index_paths") or {}
+                    covering = [c for c in case.get("term_options", {}).get("index_clause", []) if c
+                                and (c.get("deadband_pct") or 0) / 100 >= abs(paths.get(c.get("series"), 1.0))]
+                    if "index_clause" in case["negotiable"] and covering:
+                        clause = max(covering, key=lambda c: c.get("deadband_pct") or 0)
+                        with_clause = [add_package({**board["packages"][pid]["terms"], "index_clause": clause},
+                                                   "data anchor: opening window with a covering index clause")
+                                       for pid in allowed]
+                        allowed = list(dict.fromkeys(pid for pid in with_clause if pid)) or allowed
                 else:
                     # A concession schedule instead of free step sizes: a quarter of the gap while many moves
                     # remain, a third later, half at the end (P11 crawled +0.04-0.09 to a final; P07 +0.01).
