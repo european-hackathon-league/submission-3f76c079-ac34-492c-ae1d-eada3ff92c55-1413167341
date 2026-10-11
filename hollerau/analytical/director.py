@@ -565,6 +565,12 @@ def build_board(agent, case, threads, source_map, history_map, closing_only=Fals
                     paths = case["buyer"].get("index_paths") or {}
                     covering = [c for c in case.get("term_options", {}).get("index_clause", []) if c
                                 and (c.get("deadband_pct") or 0) / 100 >= abs(paths.get(c.get("series"), 1.0))]
+                    if ("index_clause" in case["negotiable"] and not covering and not relationship
+                            and None in case.get("term_options", {}).get("index_clause", [])):
+                        # every clause costs us the index move beyond its deadband: open with fixed prices
+                        # (P18 probes: no clause -> 5.00 final; a deadband-5 opening stuck at 5.53-5.8)
+                        fixed = [pid for pid in allowed if board["packages"][pid]["terms"].get("index_clause") is None]
+                        allowed = fixed or allowed
                     if "index_clause" in case["negotiable"] and covering:
                         clause = max(covering, key=lambda c: c.get("deadband_pct") or 0)
                         with_clause = [add_package({**board["packages"][pid]["terms"], "index_clause": clause},
@@ -886,6 +892,11 @@ def execute(agent, case, threads, board, selection):
                          "forecast", "share_of_business", "volume", "volume_focus")
                 claims.sort(key=lambda c: first.index(c.get("kind")) if c.get("kind") in first else len(first))
             claims = claims[:2]
+            if not th.last_terms:  # an earlier increase this year leads the first counter (P08/P18 probes)
+                raised = next((e for e in board["evidence"].values()
+                               if e["supplier_id"] == sid and e.get("kind") == "price_already_raised"), None)
+                if raised and raised not in claims:
+                    claims = [raised] + claims[:1]
             if not th.last_terms:  # first counter: the punctual-payment commitment rides along (P11 probe +0.08)
                 punctual = next((e for e in board["evidence"].values()
                                  if e["supplier_id"] == sid and e.get("kind") == "punctual_payment"), None)
