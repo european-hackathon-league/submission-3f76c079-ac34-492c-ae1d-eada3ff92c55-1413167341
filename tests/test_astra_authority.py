@@ -100,22 +100,20 @@ def test_p18_quote_status_never_bypasses_astra_or_forces_acceptance(status, monk
     assert agent.threads[sid].pending["terms"] == decision["message"]["term_sheets"][0]["terms"]
 
 
-def test_p02_astra_payment_choice_is_sent_exactly_despite_python_preferences():
+def test_p02_model_proposal_with_shorter_payment_is_not_offered():
+    """Wave 6 (2026-10-11): model proposals that gave away payment days scored 0 in P04. A proposal stays on
+    the board but a counter may only carry it when it is not worse for us than the disciplined packages."""
     agent, case, threads, sid = setup("case:P02")
     expected = complete_offer(case, {**standing_sheet(threads[sid])["terms"], "unit_price": 360.94,
                                      "payment_days": 30})
     agent.router.enabled = True
     agent.router.analyse = lambda *a, **kw: {"alternative_terms": [expected], "signals": []}
-
-    def choose(board, deadline):
-        pid = next(p for p, row in board["packages"].items() if row["terms"] == expected)
-        return selection(f"{sid}:counter", [pid], f"{sid}:payment_quotes")
-
-    agent.router.final_decision = choose
-    decision = agent.decide(case, threads)
-    assert decision["message"]["term_sheets"] == [{"terms": expected}]
-    assert "exact price reduction" in decision["message"]["body"]
-    assert agent.threads[sid].pending["terms"] == expected
+    agent.start(case, threads)
+    agent.threads[sid].analyst_candidates = [expected]
+    board = board_for(agent, case, threads)
+    counter = board["actions"].get(f"{sid}:counter")
+    offered = [board["packages"][p]["terms"] for p in (counter or {}).get("package_ids", [])]
+    assert expected not in offered
 
 
 def test_unvolunteered_index_inquiry_is_available_and_does_not_commit():

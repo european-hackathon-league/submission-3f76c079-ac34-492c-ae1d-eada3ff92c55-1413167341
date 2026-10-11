@@ -610,8 +610,19 @@ def build_board(agent, case, threads, source_map, history_map, closing_only=Fals
             replies = [m.get("status") for m in events if m.get("from") != "buyer"]
             # A validated model proposal must not disappear merely because its
             # price is outside the heuristic concession schedule.
-            allowed = list(dict.fromkeys(allowed + [pid for pid in keys.values()
-                           if board["packages"][pid]["terms"] in th.analyst_candidates]))
+            # ...but only when it is not worse for us than the best disciplined package: no shorter payment and
+            # no higher expected total (wave 6: model proposals gave away 90 -> 30 days in P04 = score 0, and a
+            # deadband-0 index with 45 days in P02 = 0.09).
+            def _total(pid):
+                v = board["packages"][pid].get("expected_total_eur")
+                return v if isinstance(v, (int, float)) else float("inf")
+            if allowed:
+                best_total = min(_total(pid) for pid in allowed)
+                best_pay = max((board["packages"][pid]["terms"].get("payment_days") or 0) for pid in allowed)
+                allowed = list(dict.fromkeys(allowed + [
+                    pid for pid in keys.values()
+                    if board["packages"][pid]["terms"] in th.analyst_candidates and _total(pid) <= best_total
+                    and (board["packages"][pid]["terms"].get("payment_days") or 0) >= best_pay]))
             if replies[-2:] != ["agreed", "agreed"] and allowed:
                 board["actions"][f"{sid}:counter"] = {"supplier_id": sid, "kind": "counter",
                                                       "package_ids": allowed, "max_packages": 3}
