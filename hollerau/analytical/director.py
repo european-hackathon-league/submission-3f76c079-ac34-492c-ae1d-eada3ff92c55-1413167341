@@ -589,6 +589,16 @@ def build_board(agent, case, threads, source_map, history_map, closing_only=Fals
                                           "supplier's own alternative: propose it to make it binding")
                         if pid and pid not in allowed:
                             allowed = allowed[:2] + [pid]
+            # The supplier itself wrote that its material is bought at fixed prices: an index clause would pay it
+            # for costs it does not have - fixed prices only, also for its own alternatives (P08 probe: no-index
+            # packages with this letter cited -> 5.06, record 0.870; an index alternative at 5.57 scored 0.44).
+            if "index_clause" in case["negotiable"] and any(c.kind == "cost_hedged" for c in th.dossier.claims):
+                allowed = [pid for pid in allowed
+                           if board["packages"][pid]["terms"].get("index_clause") is None] or allowed
+            # a supplier alternative must still be cheaper than its standing offer AND not above it in price
+            if current and current.get("unit_price"):
+                allowed = [pid for pid in allowed if (board["packages"][pid]["terms"].get("unit_price") or 0)
+                           <= current["unit_price"]] or allowed
             replies = [m.get("status") for m in events if m.get("from") != "buyer"]
             if replies[-2:] != ["agreed", "agreed"] and allowed:
                 board["actions"][f"{sid}:counter"] = {"supplier_id": sid, "kind": "counter",
@@ -848,7 +858,7 @@ def execute(agent, case, threads, board, selection):
             # kind count once ("duplicate"), so the rest is kept for later moves; volume first on the opening
             # (P07 probes: forecasts + one argument per message + management ask -> 5.40 vs 5.51 with all at once)
             if not th.last_terms:
-                first = ("contract_index", "price_already_raised", "index_peak", "calculation_offer",
+                first = ("price_already_raised", "cost_hedged", "contract_index", "index_peak", "calculation_offer",
                          "forecast", "share_of_business", "volume", "volume_focus")
                 claims.sort(key=lambda c: first.index(c.get("kind")) if c.get("kind") in first else len(first))
             claims = claims[:2]
