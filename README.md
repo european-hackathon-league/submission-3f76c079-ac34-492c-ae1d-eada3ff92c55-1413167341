@@ -42,6 +42,8 @@ problem.
 
 ## 🧠 How the agent works
 
+![How a move is made](docs/assets/how-a-move-is-made.svg)
+
 1. **Read the case like a buyer.** `hollerau/intel.py` turns the data package into *checked* arguments, each
    with its ID: index moves, our order history, should-cost, delivery and quality records, rival quotes — and
    the traps hidden in contracts and notes:
@@ -96,7 +98,7 @@ timeout**. Every batch, failures included, is in [`docs/evaluation/`](docs/evalu
 | `hollerau/intel.py` | checked arguments from the data package |
 | `arena_kit/` | arena protocol, runner (`play.py`), published cost function |
 | `tools/` | launchers (`final_azure.sh`, `run_azure.sh`, `run_free.sh`, `run_gpt6.sh`) and the scripted probe |
-| `docs/` | architecture, decision contract, evaluations |
+| `docs/` | architecture, decision contract, evaluations, [pitch slides](docs/slides/) |
 | `tests/` | `uv run pytest -q` |
 
 Sessions are recorded with [Entire](https://hack.entire.io/ehl-munich-2026/) (`git-refs` checkpoints,
