@@ -355,7 +355,7 @@ def build(case, supplier_id, package=None, asked_price=None):
         d.claims.append(Claim(
             "approval_threshold", [said["committee"]],
             f"Your key account manager explained that larger price changes need your pricing committee "
-            f"({said['committee']}); please take this complete package and its proposed commercial terms there.", 1.1, None))
+            f"({said['committee']}); please take this package there with our multi-year commitment.", 1.1, None))
     if asked_price and part:
         own = sorted(
             ((k, v) for k, v in facts.items()

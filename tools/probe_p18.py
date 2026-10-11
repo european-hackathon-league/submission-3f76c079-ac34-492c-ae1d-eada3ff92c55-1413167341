@@ -71,6 +71,11 @@ def main(path):
     for i, step in enumerate(sc["steps"]):
         if status in ("final_offer", "agreed"):
             break
+        st = standing["terms"]
+        if i and st.get("unit_price") and step["terms"]["unit_price"] >= st["unit_price"] and all(
+                st.get(k) == v for k, v in step["terms"].items() if k != "unit_price"):
+            print(f"\n[{i + 1}] our next step {step['terms']['unit_price']} >= its standing {st['unit_price']}: accept")
+            break
         used = [claims[k] for k in step.get("claims", []) if k in claims]
         body = "\n\n".join(
             [sc.get("salutation", "Dear colleagues,"), step.get("text", "Thank you for your reply.")]

@@ -14,7 +14,7 @@ import httpx
 from arena_kit.cli import load_env
 from arena_kit.client import ArenaClient, ArenaError
 from arena_kit.data import DataPackage
-from arena_kit.play import REFRESH_BUDGET_S, RemoteTable, hosted, play
+from arena_kit.play import RemoteTable, hosted, play
 
 from .agent import DECISION_BUDGET_S, POLICY_VERSION, AnalyticalAgent
 from .director import standing_sheet
@@ -35,7 +35,7 @@ class LoggedTable(RemoteTable):
     def remember_standing(self, supplier_id, events):
         sheet = standing_sheet(events)
         self.standing_ids[supplier_id] = sheet.get("term_sheet_id") if sheet else None
-        # Track received sheets for exact-term comparison; only the standing ID is acceptable.
+        # every sheet of the latest e-mail is acceptable (alternatives included)
         self.live_ids[supplier_id] = {x.get("term_sheet_id") for x in ((events[-1].get("term_sheets") or []) if events else [])}
         for event in events:
             for ts in event.get("term_sheets") or []:
@@ -58,14 +58,8 @@ class LoggedTable(RemoteTable):
         if active:
             self.agent.log("decision_dispatch", {"decision_id": active["decision_id"],
                                                  "status": "dispatch_attempt", "message": message}, supplier_id)
-        self.store.log(self.run, "send_attempt", message, self.case_id, supplier_id, self.session_id)
-        try:
-            result = super().send(supplier_id, message)
-        except Exception as exc:
-            self.store.log(self.run, "send_unconfirmed", {"error_type": type(exc).__name__},
-                           self.case_id, supplier_id, self.session_id)
-            raise
         self.store.log(self.run, "sent", message, self.case_id, supplier_id, self.session_id)
+        result = super().send(supplier_id, message)
         if "result" not in result:
             self.remember_standing(supplier_id, [result])
         self.agent.move_deadline = time.monotonic() + DECISION_BUDGET_S
@@ -93,22 +87,15 @@ class LoggedTable(RemoteTable):
         if active:
             self.agent.log("decision_dispatch", {"decision_id": active["decision_id"],
                                                  "status": "dispatch_attempt", "message": message}, supplier_id)
-        self.store.log(self.run, "send_attempt", message, self.case_id, supplier_id, self.session_id)
-        try:
-            try:
-                result = super().close(supplier_id, message)
-            except ArenaError as e:
-                retry = self.reissued_accept(supplier_id, message, e)
-                if not retry:
-                    raise
-                self.store.log(self.run, "send_attempt", retry, self.case_id, supplier_id, self.session_id)
-                result = super().close(supplier_id, retry)
-                message = retry
-        except Exception as exc:
-            self.store.log(self.run, "send_unconfirmed", {"error_type": type(exc).__name__},
-                           self.case_id, supplier_id, self.session_id)
-            raise
         self.store.log(self.run, "sent", message, self.case_id, supplier_id, self.session_id)
+        try:
+            result = super().close(supplier_id, message)
+        except ArenaError as e:
+            retry = self.reissued_accept(supplier_id, message, e)
+            if not retry:
+                raise
+            self.store.log(self.run, "sent", retry, self.case_id, supplier_id, self.session_id)
+            result = super().close(supplier_id, retry)
         self.store.log(self.run, "result", result, self.case_id, supplier_id, self.session_id)
         return result
 
@@ -118,8 +105,8 @@ class LoggedTable(RemoteTable):
             self.standing_ids[supplier_id] = retry["action"]["term_sheet_id"]
         return retry
 
-    def refresh(self, threads, deadline=None):
-        new = super().refresh(threads, deadline=deadline)
+    def refresh(self, threads):
+        new = super().refresh(threads)
         for supplier_id, event in new:
             self.remember_standing(supplier_id, threads[supplier_id])
             self.store.log(self.run, "received", event, self.case_id, supplier_id, self.session_id)
@@ -141,15 +128,12 @@ def reissued_accept(client, session_id, supplier_id, message, error, known_terms
         return None
     if "standing offer" not in str(error.detail):
         return None
-    deadline = time.monotonic() + REFRESH_BUDGET_S
-    state = client.session(session_id, deadline=deadline)
-    if state.get("status") == "ended":
-        return None
+    state = client.session(session_id)
     live = (state.get("threads") or {}).get(supplier_id) or {}
     new_id = live.get("offer_id")
     if not new_id or new_id == action.get("term_sheet_id") or live.get("closed"):
         return None
-    thread = client.thread(session_id, supplier_id, deadline=deadline)
+    thread = client.thread(session_id, supplier_id)
     # GET /threads omits term_sheet_id on sheets (round 2 P05: the retry found no old terms and the
     # 422 crashed the case) - use the terms the table recorded when it received each offer.
     terms = dict(known_terms or {})
@@ -193,8 +177,8 @@ class SafeRemoteTable(RemoteTable):
         self._record([reply])
         return reply
 
-    def refresh(self, threads, deadline=None):
-        new = super().refresh(threads, deadline=deadline)
+    def refresh(self, threads):
+        new = super().refresh(threads)
         self._record([event for _, event in new])
         return new
 
@@ -221,19 +205,7 @@ def main(argv=None):
     ap.add_argument("--primary", choices=["astra", "qwen"], default=os.environ.get("ANALYTICAL_PRIMARY", "astra"))
     ap.add_argument("--reviewer", choices=["astra", "primary"], default=os.environ.get("STRATEGIC_REVIEWER", "astra"))
     ap.add_argument("--price-pressure", type=float, default=0.0, help="experimental offer-ranking reward, 0..0.4")
-    ap.add_argument("--max-spend-usd", type=float, help="enable one-call GPT-6 mode with a shared spending cap")
-    ap.add_argument("--spend-ledger", type=Path, help="reuse this ledger across every case in the improvement round")
-    ap.add_argument("--openai-model", choices=["gpt-6-astra", "gpt-6-sol"], default="gpt-6-astra")
     args = ap.parse_args(argv)
-    if args.max_spend_usd is not None:
-        if not math.isfinite(args.max_spend_usd) or args.max_spend_usd <= 0 or not args.spend_ledger:
-            ap.error("a positive cap and --spend-ledger are both required")
-        if args.primary != "astra" or os.environ.get("ASTRA_BASE_URL") or args.offline_llm:
-            ap.error("budget mode uses direct OpenAI final decisions; remove ASTRA_BASE_URL")
-        os.environ.update(LLM_MAX_SPEND_USD=str(args.max_spend_usd), LLM_SPEND_LEDGER=str(args.spend_ledger),
-                          BUDGET_OPENAI_MODEL=args.openai_model)
-    elif args.spend_ledger:
-        ap.error("--spend-ledger requires --max-spend-usd")
     if (
         not 1 <= args.max_sessions <= 5
         or len(args.cases) > args.max_sessions
@@ -272,32 +244,15 @@ def main(argv=None):
             "price_pressure": args.price_pressure,
             "primary": args.primary,
             "reviewer": args.reviewer,
-            "spending_cap_usd": args.max_spend_usd,
-            "spending_ledger": str(args.spend_ledger) if args.spend_ledger else None,
-            "budget_model": args.openai_model if args.max_spend_usd is not None else None,
         },
     )
     router = Router(enabled=not args.offline_llm, primary=args.primary, reviewer=args.reviewer)
-    if router.spend:
-        try:
-            router.check_budget_connection()
-        except Exception:
-            store.log(args.run_id, "billing_check_failed", {"llm_calls": router.calls,
-                                                           "spending": router.spend.snapshot()})
-            router.close()
-            store.close()
-            ap.error("OpenAI billing/budget check failed; no Arena session started. Inspect the private run log.")
-        store.log(args.run_id, "billing_check", {"llm_calls": router.calls, "spending": router.spend.snapshot()})
-        router.calls = []
     client = ArenaClient(retries=0)  # never retry an ambiguous session start automatically
     available = {c["case_id"] for c in hosted(client.cases("practice"))}
     if not set(args.cases) <= available:
         ap.error("one or more cases are not hosted practice cases")
     rows = []
     for case_id in args.cases:
-        if router.spend and (router.spend.snapshot()["blocked"] or router.spend.snapshot()["remaining_usd"] <= 0):
-            print("STOP spending allowance exhausted; no new Arena session.", flush=True)
-            break
         if stop_file.exists():
             store.log(args.run_id, "batch_stopped", {"before_case": case_id,
                                                     "reason": "stop file present; no new reservation"})

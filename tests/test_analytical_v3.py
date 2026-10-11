@@ -110,20 +110,17 @@ def test_numeric_counteroffers_learn_movement_and_do_not_set_a_hard_floor():
     assert any(p.r < 95 for p in b.particles)
 
 
-def test_quotes_constrain_willingness_without_rewriting_cost_hypotheses():
+def test_cost_consistency_retains_loss_making_hypotheses_and_deduplicates():
     case, ref, sup = fixture()
     sup["full_cost"] = 110
     b = Beliefs(case, ref, sup)
-    costs = [p.full_cost for p in b.particles]
+    before = b.summary()["full_cost"]["mean"]
+    b.check_cost_consistency(ref)
+    assert b.summary()["full_cost"]["mean"] < before
+    assert any(p.full_cost > 100 and p.weight > 0 for p in b.particles)
     weights = [p.weight for p in b.particles]
     b.check_cost_consistency(ref)
-    assert [p.full_cost for p in b.particles] == costs
-    assert [p.weight for p in b.particles] == weights
-    assert any(p.full_cost > 100 and p.weight > 0 for p in b.particles)
-    assert all(p.r <= b.value(ref, p) for p in b.particles)
-    saved = b.snapshot()
-    b.check_cost_consistency(ref)
-    assert b.snapshot() == saved
+    assert weights == [p.weight for p in b.particles]
 
 
 def test_supplier_can_withdraw_a_condition_by_offering_conflicting_terms():

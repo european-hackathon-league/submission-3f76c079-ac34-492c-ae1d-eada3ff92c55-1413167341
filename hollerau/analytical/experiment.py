@@ -40,6 +40,5 @@ def fingerprint(package, store):
             'initial_memory_sha256': memory.hexdigest(),
             'public_data_manifest_sha256': hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest(),
             'public_data_files': len(data),
-            'model_settings': {'source': 'per-call model/provider/request_settings records',
-                               'note': 'Settings depend on the selected transport; no universal token cap.'},
+            'model_settings': {'astra_reasoning_effort': 'low', 'max_output_tokens': 4096},
             'comparison_warning': 'One fresh session is exploratory; historical best is not a matched control.'}
