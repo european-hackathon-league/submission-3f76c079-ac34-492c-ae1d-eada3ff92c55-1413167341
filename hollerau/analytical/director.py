@@ -664,6 +664,14 @@ def build_board(agent, case, threads, source_map, history_map, closing_only=Fals
         # a rival stood at 32.00 - the urgent supplier looked like the one to close with).
         board["actions"] = {k: v for k, v in board["actions"].items()
                             if v["kind"] != "accept" or standing_cost(v["supplier_id"]) <= best_cost * 1.01}
+        # A competitive FINAL offer expires 60 s after it arrived, and every e-mail to another supplier blocks
+        # for about a minute: take it now (wave 10:52: the best final 32.50 was accepted 107 s later - timeout,
+        # then the whole session timed out, P05 = 0).
+        finals = [sid for sid in live if latest(threads[sid]).get("status") == "final_offer"
+                  and standing_cost(sid) <= best_cost * 1.01 and f"{sid}:accept" in board["actions"]]
+        if finals:
+            take = min(finals, key=standing_cost)
+            board["actions"] = {f"{take}:accept": board["actions"][f"{take}:accept"]}
         acts = board["actions"]
         # Urgent only if worth keeping: still bargaining, or a final offer that is competitive.
         candidates = [sid for sid in live if latest(threads[sid]).get("status") != "final_offer"
