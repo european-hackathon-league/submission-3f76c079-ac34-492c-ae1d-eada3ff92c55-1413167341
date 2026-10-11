@@ -9,7 +9,7 @@ where the category goal asks for it, the cost of squeezing a supplier below a su
 
 | | |
 |---|---|
-| Practice leaderboard (best per case) | **0.808** mean over the 10 hosted cases, 10/10 deals |
+| Practice leaderboard (best per case) | **0.827** mean over the 10 hosted cases, 3rd place |
 | Last full rounds | **every session ends in a deal** – crashes, timeouts and lost moves were the main loss in earlier rounds |
 | Decision model | **gpt-5-mini** (Azure OpenAI), automatic backups: gpt-oss-120b / DeepSeek-V4.1 (Hugging Face), Gemini |
 | Live Final launcher | `./tools/final_azure.sh` – tested with 10 parallel sessions (one wave in 5.5 min of 8) |
@@ -63,12 +63,18 @@ Best practice score per case (score = share of the possible cost improvement cap
 
 | P01 | P02 | P03 | P04 | P05 | P07 | P08 | P10 | P11 | P18 | **Mean** |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 0.957 | 0.735 | 0.974 | 0.860 | 0.875 | 0.779 | 0.770 | 0.686 | 0.794 | 0.654 | **0.808** |
+| 0.967 | 0.735 | 0.974 | 0.860 | 0.875 | 0.792 | 0.870 | 0.686 | 0.794 | 0.721 | **0.827** |
 
-Honest limits: suppliers are LLM bots and vary between sessions (their opening price alone moves the score
-by ±0.1-0.2), so single runs are noisy. P10's supplier sends its final offer after our second counter however
-low we open (three models and a scripted probe agree), P02 needs the index clause the supplier values.
-Every batch, including failures, is reported in [`docs/evaluation/`](docs/evaluation/).
+Practice leaderboard: 3rd of all teams (82.7 at 11:00). Latest full wave in the Live Final setup (all ten
+cases in parallel, gpt-5-mini on Azure): **10/10 deals, no late move, no session timeout, mean 0.718**.
+
+What moved the records was reading the data package like a buyer, not tuning prices: P18 and P08 suppliers
+asked for index-driven increases although the framework agreement already indexes the price
+(`ctr:...#3.2`), P08's own letter says its alloys are bought at fixed prices until March 2027, and notes
+record an owner offering to open the calculation and a sales director focusing on volume customers. The
+agent now finds these arguments itself (`hollerau/intel.py`). Scripted probes (`tools/probe_p18.py`) were used
+to map supplier behaviour; every batch, including failures, is in [`docs/evaluation/`](docs/evaluation/),
+see [why main runs this agent](docs/evaluation/main-replacement-20261011.md).
 
 ## Run it
 
