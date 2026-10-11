@@ -15,6 +15,7 @@ from .discovery import validate_quote_request
 from .http_deadline import bounded_post
 from .preferences import validate_conditions
 from .prompt_context import compact_context
+from .spending import SpendLedger, SpendLimitReached
 
 SMALL = "Qwen/Qwen3.8-27B:deepinfra"
 LARGE = "Qwen/Qwen3.8-2.4T-A95B:deepinfra"
@@ -204,7 +205,11 @@ UNCERTAINTY: Response estimates omit some conversational hazards and are not cal
 Use historical final-warning outcomes explicitly. In continuation_review state a subjective plausible
 walkout probability range and why. Compare that range to the target's optimistic break-even threshold;
 that threshold assumes every non-walkout achieves the improvement, so real break-even can be lower.
-Read previous_continuation_review and honour its stop_condition unless new evidence justifies revising it.
+Read previous_continuation_review, but treat its stop_condition as a hypothesis, not an instruction.
+Before confirming or accepting early, read continuation_comparison and compare an AVAILABLE counter or
+useful question in plan.rejected_alternative_id. Explain attainable gain and withdrawal risk.
+Confirmation/agreement alone does not mean bargaining is exhausted; compare BEFORE promising to finalise.
+Confirmation requests quote availability only. For walking away, use exit_context: expired rivals are unavailable.
 Record a concrete stop_condition. For a question, information_needed must identify which answer would
 change your chosen package or closing decision; curiosity alone is insufficient. An unchanged standing
 package is NOT acceptance of a different proposal, regardless of an 'agreed' label.
@@ -225,7 +230,7 @@ relationship cases compare the calibrated cost range/downside, not only unit pri
 OUTPUT: Counter uses 1-3 package_ids belonging to its action and a target_package_id from those selected.
 Other actions use package_ids=[]. Confirmation sets target_package_id to its package_id; it only establishes offer status. Optional question_id appends
 a supplied question to a counter; normally leave it empty when reply_text already asks the right question.
-Select up to 3 verified evidence_ids on any supplier-facing message; use none on accept/walk_away. Their exact claims and complete priced term sheets are
+Select up to 2 verified evidence_ids on any supplier-facing message; use none on accept/walk_away. Their exact claims and complete priced term sheets are
 appended by Python. Reply_text is your actual respectful message, not an internal rationale or template
 label. It can answer questions and propose conditional exchanges, but cannot assert unsupported facts,
 make extra commitments, disclose buyer budget/urgency/weakness, or invent supplier admissions. All numeric
@@ -330,6 +335,13 @@ class Router:
         self.review_enabled = bool(enabled and self.review_key) if self.reviewer == "astra" else self.enabled
         self.review_failures = 0
         self.final_authority = bool(enabled and (self.primary == "astra" or self.reviewer == "astra"))
+        self.spend = None
+        self.responses_model = ASTRA
+        if os.environ.get("LLM_SPEND_LEDGER"):
+            if os.environ.get("ASTRA_BASE_URL") or self.primary != "astra":
+                raise ValueError("budget mode supports only the direct OpenAI final-decision route")
+            self.spend = SpendLedger(os.environ["LLM_SPEND_LEDGER"], os.environ["LLM_MAX_SPEND_USD"])
+            self.responses_model = os.environ.get("BUDGET_OPENAI_MODEL", ASTRA)
 
     async def _astra_request(self, payload, deadline):
         # A real total deadline, not separate fractions of the same budget.
@@ -348,8 +360,10 @@ class Router:
 
     def call_astra(self, system, data, deadline, role="strategic_review", schema=None):
         """Responses API with one wall-clock deadline, no retries or stored response."""
-        cap = 30 if role == "final_decision" else 20 if role == "negotiator" else 12
+        cap = (42 if self.spend else 30) if role == "final_decision" else 20 if role == "negotiator" else 12
         alt_base = os.environ.get("ASTRA_BASE_URL", "").rstrip("/")
+        if self.spend and alt_base:
+            raise ValueError("budget mode cannot switch to an unmetered endpoint")
         if alt_base:  # any OpenAI-compatible chat endpoint (e.g. Gemini) instead of the OpenAI Responses API
             remaining = min(cap, deadline - time.monotonic() - 3)
             if not self.review_enabled or remaining < 1:
@@ -357,7 +371,7 @@ class Router:
             return self._call_astra_chat(alt_base, system, data, remaining, role, schema)
         start = time.monotonic()
         request_deadline = min(deadline, start + cap)
-        record = {"model": ASTRA, "provider": "openai", "role": role, "status": "started",
+        record = {"model": self.responses_model, "provider": "openai", "role": role, "status": "started",
                   "allocated_seconds": round(max(0, request_deadline - start), 3)}
         self.calls.append(record)
         try:
@@ -366,21 +380,30 @@ class Router:
             text, metadata = compact_context(data)
             record.update(metadata)
             payload = {
-                "model": ASTRA, "instructions": system,
+                "model": self.responses_model, "instructions": system,
                 "input": "Read the supplied data and return one JSON object.\n" + text,
                 "reasoning": {"effort": "low"},
                 "text": {"format": (
                     {"type": "json_schema", "name": role, "strict": True, "schema": schema}
                     if schema else {"type": "json_object"}
                 )},
-                "max_output_tokens": 4096,
+                "max_output_tokens": (256 if role == "budget_check" else 2048) if self.spend else 4096,
                 "store": False,
             }
+            reservation = None
+            if self.spend:
+                if role not in ("final_decision", "budget_check"):
+                    raise ValueError("budget mode allows only a billing check and final decision calls")
+                payload["service_tier"] = "default"
+                reservation = self.spend.reserve(payload)
+                record["spend_reservation"] = reservation
+            record["request_settings"] = {k: payload[k] for k in
+                                          ("max_output_tokens", "reasoning", "store", "service_tier") if k in payload}
             record["schema_chars"] = len(json.dumps(schema, separators=(",", ":")))
             record["preparation_seconds"] = round(time.monotonic() - start, 3)
             record["network_budget_seconds"] = round(max(0, request_deadline - time.monotonic()), 3)
             response = asyncio.run(self._astra_request(payload, request_deadline))
-            if response.status_code == 429 and os.environ.get("ASTRA_SAFE") == "1":
+            if response.status_code == 429 and os.environ.get("ASTRA_SAFE") == "1" and not self.spend:
                 # a tokens-per-minute limit, not a refusal (gpt-6 P05: three 429s in a row, each became an
                 # offline move): wait what the API asks, once, if the move budget still allows a full answer
                 wait = min(float(response.headers.get("retry-after") or 3), 6.0)
@@ -390,6 +413,8 @@ class Router:
                     response = asyncio.run(self._astra_request(payload, request_deadline))
             record["http_status"] = response.status_code
             if response.is_error:
+                if self.spend and response.status_code in (401, 402, 403, 429):
+                    self.spend.block()
                 try:
                     error = response.json().get("error", {})
                     # Log identifiers only. Error messages can contain credential fragments.
@@ -399,9 +424,19 @@ class Router:
                             record["error_" + field] = value
                 except (ValueError, AttributeError):
                     pass
+                if self.spend and record.get("error_code") in ("credit_balance_exhausted", "insufficient_quota"):
+                    self.spend.reject_for_billing(reservation, record["error_code"])
+                    raise SpendLimitReached("OpenAI credits exhausted; no further paid calls")
             response.raise_for_status()
             result = response.json()
             record["usage"] = result.get("usage", {})
+            if self.spend:
+                self.spend.settle(reservation, record["usage"])
+            if role == "budget_check":
+                # A successful billed response establishes access even if the tiny
+                # output allowance was consumed by reasoning. It is not a decision.
+                record["status"] = "ok"
+                return {"ok": True}
             if result.get("status") != "completed":
                 raise ValueError("incomplete Astra response")
             chunks = []
@@ -421,6 +456,8 @@ class Router:
             raise
         finally:
             record["seconds"] = round(time.monotonic() - start, 3)
+            if self.spend:
+                record["spending"] = self.spend.snapshot()
 
     def _call_astra_chat(self, base, system, data, remaining, role, schema):
         """Astra's roles over an OpenAI-compatible /chat/completions endpoint (ASTRA_BASE_URL, ASTRA_MODEL,
@@ -450,7 +487,7 @@ class Router:
             try:
                 # the primary gets the time a reasoning model needs (gpt-5-mini: 12-15 s), keeping ~10 s for one
                 # backup; later entries share what is left in 9-second slices
-                slot = left if i == len(models) - 1 else (max(9, left - 10) if i == 0 else min(left, 9))
+                slot = left if i == len(models) - 1 else min(left, max(9, left - 10) if i == 0 else 9)
                 return self._chat_once(m_base, m_name, system, data, slot, role, schema, key=m_key)
             except (httpx.HTTPStatusError, httpx.TimeoutException, httpx.TransportError) as exc:
                 last_exc = exc
@@ -465,6 +502,10 @@ class Router:
     def _chat_once(self, base, model, system, data, remaining, role, schema, key=None):
         key = key or self.review_key
         record = {"model": model, "provider": base.split("/")[2], "role": role, "status": "started"}
+        completion_settings = (
+            {"max_completion_tokens": 8192, "reasoning_effort": os.environ.get("ASTRA_EFFORT", "low")}
+            if re.match(r"(gpt-5|o\d)", model) else {"max_tokens": 4096, "temperature": 0})
+        record["request_settings"] = dict(completion_settings)
         self.calls.append(record)
         start = time.monotonic()
         instructions = system
@@ -487,8 +528,7 @@ class Router:
                         if schema and base not in self._schema_rejected else {"type": "json_object"}
                     ),
                     # reasoning models (gpt-5*, o*) take max_completion_tokens and an effort, not max_tokens
-                    **({"max_completion_tokens": 8192, "reasoning_effort": os.environ.get("ASTRA_EFFORT", "low")}
-                       if re.match(r"(gpt-5|o\d)", model) else {"max_tokens": 4096, "temperature": 0}),
+                    **completion_settings,
                 },
             )
             record["http_status"] = response.status_code
@@ -515,6 +555,8 @@ class Router:
             record["seconds"] = round(time.monotonic() - start, 3)
 
     def call(self, model, system, data, deadline, max_tokens=1100):
+        if self.spend:
+            raise ValueError("budget mode forbids unmetered secondary providers")
         remaining = min(12, deadline - time.monotonic())
         if not self.enabled or remaining < 1:
             raise TimeoutError("LLM unavailable or decision budget exhausted")
@@ -749,20 +791,30 @@ The application appends the exact offer and verified arguments separately."""
     def final_decision(self, board, deadline):
         """Final authority; one bounded correction of invalid output, never an HTTP retry."""
         from .director import FinalDecisionUnavailable, normalize_selection, validate_selection
-
-        data = board
+        from .lean_decision import PROMPT, lean_board
+        data = lean_board(board) if self.spend else board
+        schema = final_schema(data)
+        if self.spend:
+            for field in schema["properties"]["plan"]["properties"].values():
+                if field.get("type") == "string" and "enum" not in field:
+                    field["maxLength"] = 180
+            schema["properties"]["rationale"]["maxLength"] = 300
+            schema["properties"]["reply_text"]["maxLength"] = 600
         chat = bool(os.environ.get("ASTRA_BASE_URL"))
         safe = chat or os.environ.get("ASTRA_SAFE") == "1"  # stability guards (run scripts set it)
         for attempt in range(2):
             try:
-                result = self.call_astra(FINAL_DIRECTOR, data, deadline, role="final_decision",
-                                         schema=final_schema(board))
+                result = self.call_astra(PROMPT if self.spend else FINAL_DIRECTOR, data, deadline, role="final_decision",
+                                         schema=schema)
+            except SpendLimitReached:
+                raise
             except Exception:
                 # A network failure or refusal is not retried and never authorizes a substitute.
                 raise FinalDecisionUnavailable("Final Astra request unavailable; no action authorized") from None
+            self.calls[-1]["raw_returned_decision"] = copy.deepcopy(result)
             if chat:
                 result = strip_bare_numbers(result)
-            if safe:
+            if safe and not self.spend:
                 result = normalize_selection(board, result)
             record = self.calls[-1]
             record["returned_decision"] = copy.deepcopy(result)
@@ -778,16 +830,24 @@ The application appends the exact offer and verified arguments separately."""
                 record["validation_reason"] = reason
                 if attempt == 0 and deadline - time.monotonic() >= (6 if chat else 10):
                     chosen = board["actions"].get((result or {}).get("action_id") if isinstance(result, dict) else None)
-                    data = {**board, "validation_feedback": {
+                    data = {**data, "validation_feedback": {
                         "invalid_decision": result, "reason": reason,
                         # the exact menu of the chosen action (Azure P11: counter packages outside its list twice)
                         "allowed_package_ids_for_this_action": (chosen or {}).get("package_ids", []),
-                        "instruction": "Correct this validation error and return a complete valid decision. "
-                                       "No action has been sent. Keep all buyer constraints and evidence rules.",
+                        "instruction": "Correct the identified fields and return a complete valid decision. "
+                                       "Keep the action and commercial choices if they are valid; this is a format "
+                                       "repair, not a fresh strategy selection. No action has been sent. "
+                                       "Keep all buyer constraints and evidence rules.",
                     }}
                     continue
                 raise FinalDecisionUnavailable("Final Astra decision invalid; no action authorized") from None
         raise FinalDecisionUnavailable("Final validation exhausted; no action authorized")
+
+    def check_budget_connection(self):
+        """A tiny metered check before spending an Arena session, within the SAME cap."""
+        if not self.spend:
+            return
+        self.call_astra('Return {"ok":true}.', {}, time.monotonic() + 15, role="budget_check")
 
     def close(self):
         self.client.close()

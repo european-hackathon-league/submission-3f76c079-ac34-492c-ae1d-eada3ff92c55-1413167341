@@ -29,10 +29,11 @@ from .playbook import feasible_seed
 from .preferences import extract_explicit_conditions, violated
 from .retrieval import retrieve
 from .router import Router
+from .spending import SpendLimitReached
 from .storage import Store
 from .sustainability import SupplierEconomics, practice_observation
 
-POLICY_VERSION = "astra-v10-traceable-plans+gemini"
+POLICY_VERSION = "ksu-stability-contract-v2"
 DECISION_BUDGET_S = TURN_SECONDS
 INFRA_ERRORS = {"HTTPStatusError", "ConnectError", "ConnectTimeout", "ReadTimeout", "RemoteProtocolError",
                 "ReadError", "WriteError", "PoolTimeout"}
@@ -774,10 +775,10 @@ class AnalyticalAgent:
         board, model, execution) becomes the best available fallback move, still inside the move window."""
         if os.environ.get("ASTRA_SAFE") != "1":
             return AnalyticalAgent._decide_turn(self, case, threads)
+        deadline = min(time.monotonic() + DECISION_BUDGET_S, self.move_deadline or float("inf"))
         try:
             return AnalyticalAgent._decide_turn(self, case, threads)
         except Exception as exc:
-            deadline = self.move_deadline or float("inf")
             if time.monotonic() >= deadline:
                 raise
             decision = None
@@ -789,7 +790,7 @@ class AnalyticalAgent:
                     decision = None
                 if decision:
                     break
-            if not decision:
+            if not decision or time.monotonic() >= deadline:
                 raise
             try:
                 self.log("decision", {"authority": "python_fallback", "action": decision,
@@ -800,6 +801,8 @@ class AnalyticalAgent:
             self.router.calls = []
             self.last_board = None
             self.decision_deadline = None
+            if time.monotonic() >= deadline:
+                raise
             return decision
 
     def _board_move(self, case):
@@ -823,6 +826,14 @@ class AnalyticalAgent:
             if self.final_authority:
                 return astra_decide(self, case, threads, deadline, self.closing_only)
             return self._decide(case, threads, started, deadline)
+        except SpendLimitReached:
+            # No more bargaining or paid retries once the round's cap is reserved.
+            # Close a received valid offer; label this separately from a model choice.
+            decision = closing_move(case, threads)
+            self.log("decision", {"authority": "budget_close", "action": decision,
+                                  "spending": self.router.spend.snapshot(), "llm_calls": self.router.calls})
+            self.router.calls = []
+            return decision
         except FinalDecisionUnavailable:
             if time.monotonic() >= deadline:
                 raise FinalDecisionUnavailable("Move deadline expired; no fallback sent") from None
@@ -851,12 +862,13 @@ class AnalyticalAgent:
             return decision
         except DecisionBudgetExpired:
             board = getattr(self, "last_board", None)
-            if self.final_authority and os.environ.get("ASTRA_SAFE") == "1" and board is not None:
+            if (self.final_authority and os.environ.get("ASTRA_SAFE") == "1" and board is not None
+                    and time.monotonic() < deadline):
                 # seconds left, no model answer: a move from the current board beats silence (wave test 06:58:
                 # P05 under load ran out of budget, nothing was sent and the runner abandoned the whole case)
                 from .director import board_fallback
                 decision = board_fallback(case, board)
-                if decision:
+                if decision and time.monotonic() < deadline:
                     self.last_board = None
                     self.log("decision", {"authority": "python_fallback", "action": decision,
                                           "reason": "move budget exhausted; board fallback",

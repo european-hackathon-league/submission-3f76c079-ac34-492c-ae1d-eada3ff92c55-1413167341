@@ -16,9 +16,11 @@ from arena_kit.play import latest, live_threads, moves_left
 from .. import compliance
 from .budget import TurnBudget
 from .communication import describe_complete, render_reply, reply_facts
+from .continuation import add_continuation_context, validate_continuation_comparison
 from .decision_record import phase, record_decision, validate_plan
 from .deliberation import add_action_consequences, economics_context, objective_scope
 from .playbook import add_playbooks, feasible_seed
+from .trade_menu import trade_candidates
 
 
 class FinalDecisionUnavailable(RuntimeError):
@@ -210,8 +212,8 @@ def build_board(agent, case, threads, source_map, history_map, closing_only=Fals
                                  "approval-route question so the desk takes it to its pricing committee/boss, and "
                                  "keep the price where it is. Accept only after the approver has answered or a "
                                  "final offer arrives.",
-            "rfq_competition": "Several packages in one e-mail must cost us about the same (different terms, "
-                               "not a price ladder - Python drops any that cost more than 1 % above the cheapest). "
+            "rfq_competition": "Select one package normally; alternatives should trade different terms at "
+                               "comparable expected TOTAL cost, not disclose a price ladder. Every selected package is sent. "
                                "walk_away ends the WHOLE case for every supplier; with several live "
                                "suppliers it is not on the menu - simply stop answering a supplier you do not "
                                "need and close with the best one. With several suppliers, competition is the lever: cite a rival's live offer "
@@ -256,6 +258,9 @@ def build_board(agent, case, threads, source_map, history_map, closing_only=Fals
                               "must_haves": case["buyer"].get("must_haves", [])},
         "policy_rules": ["Close after final_offer; this is a strategy guard, not a buyer constraint.",
                          "At most one standalone question per supplier; additional questions accompany a counter.",
+                         "Walk-away is excluded when a valid standing deal beats the estimated outside option.",
+                         "After two agreed replies, retain closing actions for that supplier; "
+                         "a better outside option remains available.",
                          "Anchor grids and the 24-anchor limit are heuristics; the offer menu is not exhaustive.",
                          "Response probabilities and economic scenarios are estimates, not verified supplier facts."],
         "candidate_generation": {"attempted": 0, "duplicates": 0, "rejected": [],
@@ -568,6 +573,13 @@ def build_board(agent, case, threads, source_map, history_map, closing_only=Fals
                     # same price with another lever setting is the same step (keeps trade-offs open)
                     near = [pid for pid in keys.values() if abs(price_of(pid) - target) <= max(0.01, target * 0.003)]
                     allowed = list(dict.fromkeys(([step] if step else []) + near)) or allowed
+                    if step and os.environ.get("ASTRA_TRADE_MENU") == "1":
+                        ceiling = board["packages"][step]["expected_total_eur"]
+                        trades = trade_candidates(board["packages"], sid, th.last_terms, ceiling)
+                        for pid in trades:
+                            board["packages"][pid]["strategy_option"] = "non-price exchange; supplier value uncertain"
+                        board["packages"][step]["strategy_option"] = "scheduled price concession"
+                        allowed = list(dict.fromkeys(allowed + trades))
             # A chargeback costs the supplier at its REAL defect rate but saves us only at the committed one
             # (free Gemini P11: asked EUR 300/complaint at 300 ppm = ~1.4 k EUR for us, ~11 k EUR for a
             # supplier at 2376 ppm - it stood at 47.00; without a chargeback the price reached 45.50).
@@ -590,6 +602,10 @@ def build_board(agent, case, threads, source_map, history_map, closing_only=Fals
                         if pid and pid not in allowed:
                             allowed = allowed[:2] + [pid]
             replies = [m.get("status") for m in events if m.get("from") != "buyer"]
+            # A validated model proposal must not disappear merely because its
+            # price is outside the heuristic concession schedule.
+            allowed = list(dict.fromkeys(allowed + [pid for pid in keys.values()
+                           if board["packages"][pid]["terms"] in th.analyst_candidates]))
             if replies[-2:] != ["agreed", "agreed"] and allowed:
                 board["actions"][f"{sid}:counter"] = {"supplier_id": sid, "kind": "counter",
                                                       "package_ids": allowed, "max_packages": 3}
@@ -664,22 +680,24 @@ def build_board(agent, case, threads, source_map, history_map, closing_only=Fals
         prices = [min(t["terms"].get("unit_price") or float("inf") for t in m["term_sheets"])
                   for m in threads[sid] if m.get("from") != "buyer" and m.get("term_sheets")]
         moving = len(prices) >= 2 and prices[-2] and (prices[-2] - prices[-1]) / prices[-2] >= 0.005
+        agreed = sum(1 for m in threads[sid] if m.get("from") != "buyer" and m.get("status") == "agreed")
         if (moving and latest(threads[sid]).get("status") == "open" and moves_left(case, threads[sid]) >= 5
-                and f"{sid}:counter" in board["actions"]):
+                and agreed < 2 and f"{sid}:counter" in board["actions"]):
             board["actions"].pop(f"{sid}:accept", None)
 
-    # Two "agreed" replies anywhere in a thread: the supplier has said yes twice - only accepting is left
+    # Two "agreed" replies anywhere in a thread: stop bargaining, but preserve a better outside option.
     # (Azure P02: an "open" between agreed replies reset the old two-in-a-row rule; it pushed on and walked).
     if not closing_only:
         for sid in live:
             agreed = sum(1 for m in threads[sid] if m.get("from") != "buyer" and m.get("status") == "agreed")
             if agreed >= 2 and f"{sid}:accept" in board["actions"]:
                 board["actions"] = {k: v for k, v in board["actions"].items()
-                                    if v["supplier_id"] != sid or v["kind"] == "accept"}
+                                    if v["supplier_id"] != sid or v["kind"] in ("accept", "walk_away")}
 
     board["candidate_generation"]["retained"] = len(board["packages"])
     add_action_consequences(agent, board)
     add_playbooks(board)
+    add_continuation_context(board)
     return board
 
 
@@ -696,13 +714,15 @@ def normalize_selection(board, selection):
     sel = dict(selection)
     sid, kind = action["supplier_id"], action["kind"]
     ids = [p for p in dict.fromkeys(sel.get("package_ids") or []) if isinstance(p, str)]
-    sel["package_ids"] = [p for p in ids if p in action.get("package_ids", [])][:3] if kind == "counter" else []
+    # Never silently change the commercial menu. An invalid counter must be
+    # corrected by the model; dropping an option leaves its prose/plan misleading.
+    sel["package_ids"] = ids if kind == "counter" else []
     qid = sel.get("question_id") or ""
     q = board["questions"].get(qid)
     sel["question_id"] = qid if q and q["supplier_id"] == sid and kind == "counter" else ""
     ev = [e for e in dict.fromkeys(sel.get("evidence_ids") or []) if e in board["evidence"]
           and board["evidence"][e]["supplier_id"] == sid]
-    sel["evidence_ids"] = [] if kind in ("accept", "walk_away") else ev[:3]
+    sel["evidence_ids"] = [] if kind in ("accept", "walk_away") else ev
     if sel.get("tone") not in ("warm", "cooperative", "firm"):
         sel["tone"] = "cooperative"
     review = sel.get("continuation_review")
@@ -760,11 +780,14 @@ def validate_selection(board, selection):
     elif ids:
         raise ValueError("packages only allowed on counter")
     qid = selection["question_id"]
+    # An ask already identifies its question in the action. Repeating that exact
+    # ID is harmless; rejecting it caused a paid repair to change the strategy.
+    same_ask = action["kind"] == "ask" and qid == action.get("question_id")
     if qid and (qid not in board["questions"] or board["questions"][qid]["supplier_id"] != sid
-                or action["kind"] != "counter"):
+                or (action["kind"] != "counter" and not same_ask)):
         raise ValueError("question belongs to another supplier or action")
     evidence = selection["evidence_ids"]
-    if not isinstance(evidence, list) or len(evidence) > 3 or len(set(evidence)) != len(evidence):
+    if not isinstance(evidence, list) or len(evidence) > 2 or len(set(evidence)) != len(evidence):
         raise ValueError("invalid evidence selection")
     if any(e not in board["evidence"] or board["evidence"][e]["supplier_id"] != sid for e in evidence):
         raise ValueError("unverified evidence")
@@ -795,12 +818,28 @@ def validate_selection(board, selection):
     if action["kind"] in ("ask", "reply") and not review["information_needed"].strip():
         raise ValueError("a question needs an explicit decision-relevant information goal")
     validate_plan(board, action, selection)
+    validate_continuation_comparison(board, action, selection)
     if action["kind"] not in ("accept", "walk_away"):
         render_reply(selection["reply_text"], board["reply_facts"])
     return action
 
 
 def execute(agent, case, threads, board, selection):
+    """A rejected render must not consume evidence, questions, or planned offers."""
+    action = validate_selection(board, selection)
+    th = agent.threads[action["supplier_id"]]
+    before = copy.deepcopy(vars(th))
+    used = copy.deepcopy(getattr(agent, "case_used", set()))
+    try:
+        return _execute(agent, case, threads, board, selection)
+    except Exception:
+        vars(th).clear()
+        vars(th).update(before)
+        agent.case_used = used
+        raise
+
+
+def _execute(agent, case, threads, board, selection):
     """Render exactly the approved action; no reranking, fallback or term substitutions."""
     action = validate_selection(board, selection)
     sid, kind = action["supplier_id"], action["kind"]
@@ -833,16 +872,13 @@ def execute(agent, case, threads, board, selection):
             th.pending = {"kind": "quote_request", "request": question, "event_count": len(events)}
         elif kind == "confirm":
             offers = [board["packages"][action["package_id"]]["terms"]]
-            body = authored + "\n\n" + describe_complete(case, offers[0], th.std)
+            body = (authored + "\n\nPlease confirm whether this complete quotation is available. "
+                    "This is not an acceptance or purchase order.\n\n" + describe_complete(case, offers[0], th.std))
             th.asked_confirmations.add(json.dumps(offers[0], sort_keys=True))
             th.pending = {"kind": "quote_confirmation", "request": action, "event_count": len(events)}
         else:
-            # Alternatives in ONE e-mail must cost us about the same; a price ladder shows the supplier how
-            # far we go (free Gemini P05: 28.80/30.60/32.40 sent, the supplier answered 32.50).
             picked = [board["packages"][pid] for pid in selection["package_ids"]]
-            cheapest = min((p.get("direct_cost_eur") or float("inf")) for p in picked)
-            offers = [p["terms"] for p in picked
-                      if (p.get("direct_cost_eur") or float("inf")) <= cheapest * 1.01] or [picked[0]["terms"]]
+            offers = [p["terms"] for p in picked]
             claims = [board["evidence"][eid] for eid in selection["evidence_ids"]]
             # One or two verified arguments per e-mail: each counted argument buys a step, arguments of one
             # kind count once ("duplicate"), so the rest is kept for later moves; volume first on the opening
@@ -851,7 +887,8 @@ def execute(agent, case, threads, board, selection):
                 first = ("contract_index", "price_already_raised", "index_peak", "calculation_offer",
                          "forecast", "share_of_business", "volume", "volume_focus")
                 claims.sort(key=lambda c: first.index(c.get("kind")) if c.get("kind") in first else len(first))
-            claims = claims[:2]
+            # The schema/validator limits selection to two before approval. Never
+            # silently discard a selected argument after the prose has been written.
             if not th.last_terms:  # first counter: the punctual-payment commitment rides along (P11 probe +0.08)
                 punctual = next((e for e in board["evidence"].values()
                                  if e["supplier_id"] == sid and e.get("kind") == "punctual_payment"), None)
@@ -862,8 +899,8 @@ def execute(agent, case, threads, board, selection):
             buyer_sent = sum(1 for m in events if m.get("from") == "buyer")
             if buyer_sent == 1 and not qid and not getattr(th, "escalated", False):
                 # the second counter asks for the decision-maker: the largest single concession in the P07 probes
-                question = ("Please take this package to your management for approval - a consolidated, "
-                            "multi-year commitment from us is a significant account for you.")
+                question = ("Please take this complete package and the verified commercial arguments "
+                            "to your management for approval.")
                 th.escalated = True
             # Escalating to the supplier's approver: management moved for a longer contract plus the
             # share-of-business prospect (P18 0.563) and not without it (0.509) - attach it if unused.
@@ -960,6 +997,8 @@ def compact_board(board, keep=24):
     # were all from two suppliers, the third lost its counter action and the board offered only accepts)
     for action in board["actions"].values():
         if action.get("kind") == "counter":
+            chosen += [pid for pid in action["package_ids"]
+                       if pk[pid].get("strategy_option") and pid not in chosen]
             own = sorted(action["package_ids"], key=lambda p: pk[p]["terms"].get("unit_price") or 0)
             step = max(1, len(own) // 4)
             chosen += [pid for pid in own[::step][:4] if pid not in chosen]
@@ -987,7 +1026,9 @@ def compact_board(board, keep=24):
             if isinstance(sup.get(key), list):
                 sup[key] = sup[key][-2:]
         if isinstance(sup.get("sources"), dict):
-            sup["sources"] = {k: (v[:800] if isinstance(v, str) else v) for k, v in sup["sources"].items()}
+            # Don't truncate a refusal/condition or detach a quotation from its context.
+            sup["sources"] = dict(sup["sources"])
+    add_continuation_context(small)
     return small
 
 
@@ -1007,7 +1048,7 @@ def decide(agent, case, threads, deadline, closing_only=False):
         sid = min(viable, key=lambda s: sum(e.get("from") == "buyer" for e in threads[s]))
         # With several live suppliers every second counts: each unanswered thread times out after a minute
         # (Azure P05: two suppliers walked on timeouts while the proposer and final call ran in turn).
-        if budget.can_propose() and len(live_threads(threads)) == 1:
+        if budget.can_propose() and len(live_threads(threads)) == 1 and not getattr(agent.router, "spend", None):
             before = time.monotonic()
             analysis, _ = agent.interpret(case, sid, threads[sid], budget.proposer_deadline())
             availability[sid] = {"status": "unavailable" if analysis.get("fallback") else
@@ -1019,7 +1060,8 @@ def decide(agent, case, threads, deadline, closing_only=False):
         else:
             # Do not carry stale model proposals across a changed reply when skipped.
             agent.threads[sid].analyst_candidates = []
-            availability[sid] = {"status": "skipped_insufficient_budget", "budget": budget.snapshot()}
+            availability[sid] = {"status": "single_final_call" if getattr(agent.router, "spend", None)
+                                 else "skipped_insufficient_budget", "budget": budget.snapshot()}
     else:
         availability = {sid: {"status": "not_needed_closing"} for sid in availability}
     before = time.monotonic()
@@ -1027,8 +1069,8 @@ def decide(agent, case, threads, deadline, closing_only=False):
     board["model_availability"] = availability
     board["timing"] = {**timings, "board_seconds": round(time.monotonic() - before, 3),
                        "before_final": budget.snapshot()}
-    if os.environ.get("ASTRA_COMPACT") == "1" or (
-            os.environ.get("ASTRA_BASE_URL") and os.environ.get("ASTRA_COMPACT") != "0"):
+    if not getattr(agent.router, "spend", None) and (os.environ.get("ASTRA_COMPACT") == "1" or (
+            os.environ.get("ASTRA_BASE_URL") and os.environ.get("ASTRA_COMPACT") != "0")):
         board = compact_board(board)
     if not board["actions"]:
         raise FinalDecisionUnavailable("No remaining valid action")
@@ -1047,6 +1089,7 @@ def decide(agent, case, threads, deadline, closing_only=False):
         return decision
     except (ValueError, KeyError, TypeError, ArithmeticError, TimeoutError, FinalDecisionUnavailable) as exc:
         agent.log("final_decision_failed", {"error_type": type(exc).__name__, "sent": False,
+                                            "validation_reason": str(exc) if isinstance(exc, ValueError) else type(exc).__name__,
                                             "board_event_id": board_event_id,
                                             "model_availability": availability, "budget": budget.snapshot(),
                                             "llm_calls": agent.router.calls})
