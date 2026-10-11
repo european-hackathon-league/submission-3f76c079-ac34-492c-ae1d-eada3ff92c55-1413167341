@@ -580,6 +580,12 @@ def build_board(agent, case, threads, source_map, history_map, closing_only=Fals
                             board["packages"][pid]["strategy_option"] = "non-price exchange; supplier value uncertain"
                         board["packages"][step]["strategy_option"] = "scheduled price concession"
                         allowed = list(dict.fromkeys(allowed + trades))
+            # The supplier itself wrote that its material is bought at fixed prices: an index clause would pay it
+            # for costs it does not have, so we offer fixed prices only (P08 probe: no-index packages with this
+            # letter cited -> 5.06 final, record 0.870; the agent's index packages had cost EUR 26 k).
+            if "index_clause" in case["negotiable"] and any(c.kind == "cost_hedged" for c in th.dossier.claims):
+                allowed = [pid for pid in allowed
+                           if board["packages"][pid]["terms"].get("index_clause") is None] or allowed
             # A chargeback costs the supplier at its REAL defect rate but saves us only at the committed one
             # (free Gemini P11: asked EUR 300/complaint at 300 ppm = ~1.4 k EUR for us, ~11 k EUR for a
             # supplier at 2376 ppm - it stood at 47.00; without a chargeback the price reached 45.50).
@@ -884,7 +890,7 @@ def _execute(agent, case, threads, board, selection):
             # kind count once ("duplicate"), so the rest is kept for later moves; volume first on the opening
             # (P07 probes: forecasts + one argument per message + management ask -> 5.40 vs 5.51 with all at once)
             if not th.last_terms:
-                first = ("contract_index", "price_already_raised", "index_peak", "calculation_offer",
+                first = ("price_already_raised", "cost_hedged", "contract_index", "index_peak", "calculation_offer",
                          "forecast", "share_of_business", "volume", "volume_focus")
                 claims.sort(key=lambda c: first.index(c.get("kind")) if c.get("kind") in first else len(first))
             # The schema/validator limits selection to two before approval. Never
