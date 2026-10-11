@@ -778,7 +778,9 @@ class AnalyticalAgent:
             return AnalyticalAgent._decide_turn(self, case, threads)
         except Exception as exc:
             deadline = self.move_deadline or float("inf")
-            if time.monotonic() >= deadline:
+            # our budget is 55 s of the arena's 60: a python fallback takes milliseconds, so it is still sent in
+            # the last seconds (wave 10:13: P05 sent nothing after an expired budget, the offer went stale, 0)
+            if time.monotonic() >= deadline + 3:
                 raise
             decision = None
             for make in (lambda: AnalyticalAgent._board_move(self, case), lambda: self.offline_move(case, threads),

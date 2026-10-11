@@ -73,7 +73,8 @@ def test_expired_model_error_cannot_trigger_fallback(monkeypatch):
 
     monkeypatch.setattr(module, 'astra_decide', fail)
     monkeypatch.setenv('ASTRA_SAFE', '1')
-    agent = SimpleNamespace(move_deadline=time.monotonic() - 1, case_id='test', turn=0,
+    # the deadline lies beyond the 3 s grace in which a python fallback may still be sent
+    agent = SimpleNamespace(move_deadline=time.monotonic() - 5, case_id='test', turn=0,
                             final_authority=True, closing_only=False,
                             observe=lambda *a: None, check_budget=lambda: None,
                             offline_move=lambda *a: pytest.fail('late fallback'))
