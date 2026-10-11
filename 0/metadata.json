@@ -1,0 +1,12 @@
+{
+  "cli_version": "0.11.4",
+  "checkpoint_id": "01M4MRN9CDHA5116PT568SF7DN",
+  "session_id": "azure-all-cases-20261011",
+  "strategy": "manual-commit",
+  "created_at": "2026-10-11T05:58:34.945357Z",
+  "checkpoints_count": 2,
+  "files_touched": null,
+  "agent": "Codex (scoped transcript export)",
+  "model": "",
+  "compact_transcript_start": 0
+}
