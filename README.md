@@ -5,6 +5,10 @@ Team **+=** · [ziminaksu](https://github.com/ziminaksu) · [IlyaKats2005](https
 
 ![python](https://img.shields.io/badge/python-3.12-blue) ![runner](https://img.shields.io/badge/runner-uv-purple) ![model](https://img.shields.io/badge/LLM-gpt--5--mini%20%2B%20fallbacks-green) ![practice](https://img.shields.io/badge/practice-0.827%20·%203rd-orange)
 
+🎤 **Pitch slides:** [TACTO_Team_plus-equals_slides.pptx](docs/slides/TACTO_Team_plus-equals_slides.pptx) · [all slides as images](docs/slides/)
+
+[![Pitch](docs/slides/slide1.png)](docs/slides/TACTO_Team_plus-equals_slides.pptx)
+
 The agent negotiates by e-mail with supplier bots and closes the deal with the **lowest total cost** for the
 buyer — price, payment terms, freight, lateness, quality, index clauses and, where the goal requires it, the
 cost of squeezing a supplier below a sustainable margin.
